@@ -1,46 +1,15 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Optional
 from datetime import datetime, timedelta
 
 app = FastAPI(
     title="API de Cobranza - Quesos Navarro",
-    description="Mockup para la gestión automatizada de pagos y saldos"
+    description="Mockup para la gestión automatizada de pagos, saldos y conciliación"
 )
 
-# --- NUEVO MODELO DE DATOS ---
-class TransactionHistoryRequest(BaseModel):
-    customerId: str
-    limit: Optional[int] = 5  # Por defecto trae los últimos 5 movimientos
-
-# --- NUEVA BASE DE DATOS MOCK (Historial) ---
-transactions_db = {
-    "CUST-001": [
-        {"transactionId": "PAY-901", "date": "2026-04-28", "type": "payment", "amount": 500.00, "description": "Abono vía transferencia", "status": "applied"},
-        {"transactionId": "INV-304", "date": "2026-04-15", "type": "invoice", "amount": 1500.00, "description": "Compra Queso Oaxaca 10kg", "status": "partially_paid"}
-    ],
-    "CUST-002": [
-        {"transactionId": "INV-305", "date": "2026-04-20", "type": "invoice", "amount": 1000.00, "description": "Compra Queso Panela 5kg", "status": "pending"}
-    ]
-}
-
-# --- NUEVO ENDPOINT ---
-@app.post("/collections/customer-transactions")
-async def get_transactions(req: TransactionHistoryRequest):
-    """Endpoint E: Obtener historial de movimientos (compras y pagos)"""
-    # Buscamos el historial del cliente
-    history = transactions_db.get(req.customerId, [])
-    
-    # Si no tiene historial, regresamos una lista vacía
-    if not history:
-        return {"success": True, "message": "Sin movimientos recientes", "data": []}
-    
-    # Aplicamos el límite para no saturar al bot con 100 registros
-    limited_history = history[:req.limit]
-    
-    return {"success": True, "data": limited_history}
-
 # --- MODELOS DE DATOS (Validación) ---
+
 class Customer(BaseModel):
     customerId: str
     customerName: str
@@ -54,6 +23,15 @@ class Customer(BaseModel):
 class QueryBalance(BaseModel):
     phone: str
 
+    # Este validador intercepta el teléfono y lo limpia automáticamente
+    @field_validator('phone')
+    @classmethod
+    def clean_phone_number(cls, value: str) -> str:
+        clean_val = value.replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
+        if not clean_val.startswith("+"):
+            clean_val = "+" + clean_val
+        return clean_val
+
 class PaymentLinkRequest(BaseModel):
     customerId: str
     amount: float
@@ -65,7 +43,12 @@ class InteractionLog(BaseModel):
     event: str
     notes: str
 
-# --- BASE DE DATOS MOCK ---
+class TransactionHistoryRequest(BaseModel):
+    customerId: str
+    limit: Optional[int] = 5  # Por defecto trae los últimos 5 movimientos
+
+# --- BASES DE DATOS MOCK ---
+
 customers_db = {
     "+523781134353": {
         "customerId": "CUST-001",
@@ -96,8 +79,17 @@ customers_db = {
         "currency": "MXN",
         "dueDate": (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
         "status": "upcoming_due"
-    },
-    # Nota: Rodolfo Navarro se asume como el contacto principal o dueño
+    }
+}
+
+transactions_db = {
+    "CUST-001": [
+        {"transactionId": "PAY-901", "date": "2026-04-28", "type": "payment", "amount": 500.00, "description": "Abono vía transferencia", "status": "applied"},
+        {"transactionId": "INV-304", "date": "2026-04-15", "type": "invoice", "amount": 1500.00, "description": "Compra Queso Oaxaca 10kg", "status": "partially_paid"}
+    ],
+    "CUST-002": [
+        {"transactionId": "INV-305", "date": "2026-04-20", "type": "invoice", "amount": 1000.00, "description": "Compra Queso Panela 5kg", "status": "pending"}
+    ]
 }
 
 # --- ENDPOINTS ---
@@ -111,9 +103,8 @@ async def get_upcoming_due(daysBeforeDue: int = 3):
 @app.post("/collections/customer-balance")
 async def get_balance(query: QueryBalance):
     """Endpoint B: Consultar saldo por número de teléfono"""
-    # Limpiamos el teléfono de espacios o símbolos
-    clean_phone = query.phone.replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
-    customer = customers_db.get(clean_phone)
+    # Gracias al field_validator, 'query.phone' ya viene limpio y con el '+'
+    customer = customers_db.get(query.phone)
     
     if not customer:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
@@ -137,3 +128,14 @@ async def log_interaction(log: InteractionLog):
     """Endpoint D: Registrar evento en el log"""
     print(f"DEBUG: Registro para {log.customerId} vía {log.channel} - Evento: {log.event}")
     return {"success": True, "data": {"logged": True}}
+
+@app.post("/collections/customer-transactions")
+async def get_transactions(req: TransactionHistoryRequest):
+    """Endpoint E: Obtener historial de movimientos (compras y pagos)"""
+    history = transactions_db.get(req.customerId, [])
+    
+    if not history:
+        return {"success": True, "message": "Sin movimientos recientes", "data": []}
+    
+    limited_history = history[:req.limit]
+    return {"success": True, "data": limited_history}
